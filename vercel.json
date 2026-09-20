@@ -1,0 +1,7 @@
+{
+  "rewrites": [
+    { "source": "/", "destination": "/api/index" },
+    { "source": "/pc", "destination": "/api/pc" },
+    { "source": "/mp", "destination": "/api/mp" }
+  ]
+}

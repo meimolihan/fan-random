@@ -1,0 +1,16 @@
+services:
+  fan-random:
+    build: .
+    image: mobufan/fan-random:latest
+    container_name: fan-random
+    restart: always
+    volumes:
+      - ./public/pc:/fan-random/public/pc             # pc 桌面端壁纸目录（横屏）
+      - ./public/mp:/fan-random/public/mp             # mp 移动端壁纸目录（竖屏）
+      - ./photos:/fan-random/photos                       # 原始图片目录
+    ports:
+      - 8588:3000
+    environment:
+      - TZ=Asia/Shanghai
+      - PORT=3000
+      - PUBLIC_HOST=http://10.10.10.251:8588       # 对外访问地址（自定义）

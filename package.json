@@ -1,0 +1,36 @@
+{
+  "name": "fan-random",
+  "version": "1.0.0",
+  "description": "随机壁纸 API - Vercel/Docker/单文件/Systemd 全场景部署版",
+  "main": "docker-server.js",
+  "bin": {
+    "fan-random": "./bin/fan-random.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "build:sea": "bash scripts/build-sea.sh",
+    "lint": "node --check docker-server.js && node --check bin/fan-random.js",
+    "vercel-build": "node scripts/build.js"
+  },
+  "pkg": {
+    "scripts": [
+      "bin/fan-random.js"
+    ],
+    "assets": [
+      "package.json"
+    ]
+  },
+  "devDependencies": {
+    "postject": "^1.0.0-alpha.6"
+  },
+  "keywords": ["random", "wallpaper", "api", "fan-random", "vercel"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/meimolihan/fan-random.git"
+  },
+  "bugs": {
+    "url": "https://github.com/meimolihan/fan-random/issues"
+  },
+  "homepage": "https://github.com/meimolihan/fan-random#readme",
+  "license": "MIT"
+}

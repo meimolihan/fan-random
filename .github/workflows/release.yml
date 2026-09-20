@@ -1,0 +1,213 @@
+name: Release Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要构建的标签 (例如: v1.0.1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref_name || github.event.inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.ref_name || github.event.inputs.tag }}
+  DOCKERHUB_IMAGE: mobufan/fan-random
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build-binaries:
+    name: 编译二进制 (linux amd64 + arm64) 与图片包
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      built: ${{ steps.pkg.outputs.built }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', github.event.inputs.tag) }}
+
+      - name: Validate tag format
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [[ ! "${{ github.event.inputs.tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+            echo "错误: 标签格式无效，必须以 'v' 开头，例如: v1.0.1"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+
+      - name: 语法检查
+        run: |
+          node --check docker-server.js
+          node --check bin/fan-random.js
+
+      - name: Compile binaries with yao-pkg
+        id: pkg
+        run: |
+          set -e
+          npm i -g @yao-pkg/pkg
+          pkg -t node20-linux-x64 docker-server.js -o fan-random_linux_amd64
+          pkg -t node20-linux-arm64 docker-server.js -o fan-random_linux_arm64
+          ./fan-random_linux_amd64 version
+          ./fan-random_linux_arm64 version
+          ls -lh fan-random_linux_amd64 fan-random_linux_arm64
+          echo "built=true" >> "$GITHUB_OUTPUT"
+
+      - name: Package public images
+        run: |
+          tar -czf fan-random_public.tar.gz public
+          ls -lh fan-random_public.tar.gz
+
+      - name: Upload binaries as artifacts
+        if: steps.pkg.outputs.built == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: fan-random-release
+          path: |
+            fan-random_linux_amd64
+            fan-random_linux_arm64
+            fan-random_public.tar.gz
+          if-no-files-found: error
+
+  publish-release:
+    name: 发布 Release (附带二进制 + 图片包)
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', github.event.inputs.tag) }}
+
+      - name: Download release assets
+        if: needs.build-binaries.outputs.built == 'true'
+        uses: actions/download-artifact@v7
+        with:
+          name: fan-random-release
+          path: ./
+
+      - name: Prepare release body
+        run: |
+          if [ -f RELEASE_NOTES.md ]; then
+            cp RELEASE_NOTES.md _release_body.md
+          else
+            cat > _release_body.md <<EOF
+          fan-random ${{ env.RELEASE_TAG }} - 随机壁纸 API
+
+          Docker 镜像：
+            - Docker Hub：docker pull mobufan/fan-random:${{ env.RELEASE_TAG }}
+            - GHCR：docker pull ghcr.io/meimolihan/fan-random:${{ env.RELEASE_TAG }}
+
+          二进制安装：
+            bash -c "\$(curl -sSL https://raw.githubusercontent.com/meimolihan/fan-random/main/scripts/install.sh)" -p 8588 -y
+          EOF
+          fi
+
+      - name: Create / update Release with assets
+        run: |
+          TAG="${{ env.RELEASE_TAG }}"
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          FILES=""
+          [ -f fan-random_linux_amd64 ] && FILES="$FILES fan-random_linux_amd64"
+          [ -f fan-random_linux_arm64 ] && FILES="$FILES fan-random_linux_arm64"
+          [ -f fan-random_public.tar.gz ] && FILES="$FILES fan-random_public.tar.gz"
+          gh release create "$TAG" \
+            --title "fan-random $TAG" \
+            --notes-file _release_body.md \
+            $FILES
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-docker:
+    name: 构建推送 Docker 镜像 (Docker Hub + GHCR)
+    needs: publish-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', github.event.inputs.tag) }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          VER="${{ env.RELEASE_TAG }}"
+          VER_NO_V="${VER#v}"
+          TAGS="${{ env.DOCKERHUB_IMAGE }}:${VER},${{ env.DOCKERHUB_IMAGE }}:latest"
+          TAGS="${TAGS},${{ env.GHCR_IMAGE }}:${VER},${{ env.GHCR_IMAGE }}:${VER_NO_V}"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker images
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  sync-cnb:
+    name: 同步到 CNB 镜像仓库
+    needs: build-docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', github.event.inputs.tag) }}
+
+      - name: Sync to CNB Repository
+        if: ${{ env.CNB_TOKEN != '' }}
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_ACCESS_TOKEN }}
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:${{ github.workspace }} \
+            -w ${{ github.workspace }} \
+            -e PLUGIN_TARGET_URL="https://cnb.cool/meimolihan/fan-random.git" \
+            -e PLUGIN_AUTH_TYPE="https" \
+            -e PLUGIN_USERNAME="cnb" \
+            -e PLUGIN_PASSWORD="$CNB_TOKEN" \
+            -e PLUGIN_FORCE="true" \
+            -e PLUGIN_PUSH_TAGS="true" \
+            tencentcom/git-sync
+
+      - name: Skip CNB sync
+        if: ${{ env.CNB_TOKEN == '' }}
+        env:
+          CNB_TOKEN: ${{ secrets.CNB_ACCESS_TOKEN }}
+        run: echo "::warning::CNB_ACCESS_TOKEN 未配置，跳过同步到 CNB 镜像仓库"
