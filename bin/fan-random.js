@@ -229,18 +229,16 @@ function isNum(s) {
   return /^[0-9]+$/.test(s)
 }
 
-function cmdlineOf(pid) {
-  try {
-    return fs.readFileSync(`/proc/${ pid }/cmdline`, 'utf8').replace(/\0/g, ' ').trim()
-  } catch {
-    return ''
-  }
-}
-
-// 匹配运行中的 fan-random 进程：命令行包含 <appDir>/docker-server.js
+// 匹配运行中的 fan-random 进程：命令行包含 <appDir>/docker-server.js 或二进制 <appDir>/fan-random
 function matchFanRandomProcs(appDir) {
-  const marker = path.join(appDir, 'docker-server.js')
+  // 兼容二进制安装（BIN_PATH=<appDir>/fan-random）与源码安装（node <appDir>/docker-server.js）
+  const markers = [
+    path.join(appDir, 'docker-server.js'),
+    path.join(appDir, 'fan-random'),
+    path.join(appDir, 'bin', 'docker-server.js'),
+  ]
   const pids = []
+  const toks = []
   let entries
   try {
     entries = fs.readdirSync('/proc')
@@ -251,13 +249,25 @@ function matchFanRandomProcs(appDir) {
     if (!isNum(name)) continue
     const pid = Number(name)
     if (pid <= 0 || pid === process.pid) continue
-    const cmdline = cmdlineOf(pid)
-    if (cmdline.includes(marker)) {
+    // 解析 argv 完整 token（NUL 分隔），仅整词匹配，避免 vim/tail/grep 等含路径子串的进程被误杀
+    toks.length = 0
+    try {
+      const raw = fs.readFileSync(`/proc/${ pid }/cmdline`)
+      let acc = ''
+      for (const b of raw) {
+        if (b === 0) { if (acc) { toks.push(acc); acc = '' } }
+        else acc += String.fromCharCode(b)
+      }
+      if (acc) toks.push(acc)
+    } catch {
+      continue
+    }
+    if (markers.some(m => toks.includes(m))) {
       pids.push(pid)
       continue
     }
     // 兼容相对启动方式（如 `node ./docker-server.js`）：匹配工作目录 + docker-server.js
-    if (!/\bnode\b/.test(cmdline) || !/docker-server\.js/.test(cmdline)) continue
+    if (!toks.includes('node') || !toks.some(t => /docker-server\.js/.test(t))) continue
     try {
       if (fs.readlinkSync(`/proc/${ pid }/cwd`) === appDir) pids.push(pid)
     } catch {
@@ -590,8 +600,18 @@ async function cmdUninstall(args) {
     }
   }
 
+  // 危险路径防护：拒绝删除 / 或非绝对路径
+  const assertSafeRm = p => {
+    const norm = p && path.resolve(String(p))
+    return norm && norm !== path.parse(norm).root
+  }
+
   // 移除程序目录（含 docker-server.js、bin/fan-random.js）
-  if (fs.existsSync(appDir)) {
+  if (appDir && fs.existsSync(appDir)) {
+    if (!assertSafeRm(appDir)) {
+      warn(`拒绝删除危险路径: ${ appDir }（不允许为根目录或空路径）`)
+      return 1
+    }
     try {
       fs.rmSync(appDir, { recursive: true, force: true })
       done(`已删除程序目录 ${ appDir }`)
@@ -640,6 +660,10 @@ async function cmdUninstall(args) {
       else remove = await confirm(`是否删除壁纸目录 ${ dataDir }（完全卸载）`, true)
 
       if (remove) {
+        if (!assertSafeRm(dataDir)) {
+          warn(`拒绝删除危险路径: ${ dataDir }（不允许为根目录或空路径）`)
+          continue
+        }
         try {
           fs.rmSync(dataDir, { recursive: true, force: true })
           done(`已删除壁纸目录 ${ dataDir }`)

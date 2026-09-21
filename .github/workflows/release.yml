@@ -39,8 +39,8 @@ jobs:
       - name: Validate tag format
         if: github.event_name == 'workflow_dispatch'
         run: |
-          if [[ ! "${{ github.event.inputs.tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
-            echo "错误: 标签格式无效，必须以 'v' 开头，例如: v1.0.1"
+          if [[ ! "${{ github.event.inputs.tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "错误: 标签格式无效，必须以 'v' 开头且为 x.y.z，例如: v1.0.1"
             exit 1
           fi
 
@@ -165,7 +165,7 @@ jobs:
           VER="${{ env.RELEASE_TAG }}"
           VER_NO_V="${VER#v}"
           TAGS="${{ env.DOCKERHUB_IMAGE }}:${VER},${{ env.DOCKERHUB_IMAGE }}:latest"
-          TAGS="${TAGS},${{ env.GHCR_IMAGE }}:${VER},${{ env.GHCR_IMAGE }}:${VER_NO_V}"
+          TAGS="${TAGS},${{ env.GHCR_IMAGE }}:${VER},${{ env.GHCR_IMAGE }}:${VER_NO_V},${{ env.GHCR_IMAGE }}:latest"
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker images
@@ -191,7 +191,7 @@ jobs:
           ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', github.event.inputs.tag) }}
 
       - name: Sync to CNB Repository
-        if: ${{ env.CNB_TOKEN != '' }}
+        if: ${{ secrets.CNB_ACCESS_TOKEN != '' }}
         env:
           CNB_TOKEN: ${{ secrets.CNB_ACCESS_TOKEN }}
         run: |
@@ -207,7 +207,7 @@ jobs:
             tencentcom/git-sync
 
       - name: Skip CNB sync
-        if: ${{ env.CNB_TOKEN == '' }}
+        if: ${{ secrets.CNB_ACCESS_TOKEN == '' }}
         env:
           CNB_TOKEN: ${{ secrets.CNB_ACCESS_TOKEN }}
         run: echo "::warning::CNB_ACCESS_TOKEN 未配置，跳过同步到 CNB 镜像仓库"

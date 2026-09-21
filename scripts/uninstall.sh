@@ -124,17 +124,25 @@ read_config() {
 }
 
 find_fan_random_pids() {
-  local d pid cmdline
+  # 按 argv 整词匹配，避免把 vim/tail/grep 等恰好含路径的无关进程误杀
+  local d pid t
+  local match_a match_b match_c
+  match_a="${APP_DIR}/docker-server.js"
+  match_b="${APP_DIR}/bin/docker-server.js"
+  match_c="${APP_DIR}/fan-random"
   for d in /proc/[0-9]*; do
     [ -d "$d" ] || continue
     pid="${d#/proc/}"
     [ "$pid" = "$$" ] && continue
-    # exe 可能是 node 或单文件二进制，用命令行匹配进程
-    cmdline=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null) || continue
-    case "$cmdline" in
-      *"${APP_DIR}/docker-server.js"*) echo "$pid" ;;
-      *"${APP_DIR}/fan-random"*) echo "$pid" ;;
-    esac
+    if [ -d "$d" ] && [ -r "$d/cmdline" ]; then
+      while IFS= read -r -d '' t; do
+        matched="n"
+        case "$t" in
+          "$match_a"|"$match_b"|"$match_c") matched="y" ;;
+        esac
+        [ "$matched" = "y" ] && { echo "$pid"; break; }
+      done < "$d/cmdline"
+    fi
   done
 }
 
@@ -190,12 +198,30 @@ MP_DIR=""
 APP_DIR="/var/lib/${APP_NAME}"
 read_config
 
-# 从 service 文件回退读取安装参数（config 缺失时）
+# 从 service 文件回退读取安装参数（config 缺失时），兼容引号包裹的路径
 if [ -f "$SERVICE_FILE" ]; then
   [ -z "$PORT" ] && PORT=$(grep -oE 'PORT=[0-9]+' "$SERVICE_FILE" | head -n1 | cut -d= -f2)
   [ -z "$PORT" ] && PORT="$DEFAULT_PORT"
-  [ -z "$APP_DIR" ] && APP_DIR=$(grep -oE 'WorkingDirectory=[^ ]+' "$SERVICE_FILE" | head -n1 | cut -d= -f2)
+  if [ -z "$APP_DIR" ]; then
+    APP_DIR=$(grep -oE 'WorkingDirectory="?[^"]+' "$SERVICE_FILE" | head -n1 | sed 's/WorkingDirectory="\?//')
+  fi
 fi
+
+# 危险路径防护：拒绝删除 / 、空路径或非绝对路径
+assert_safe_rm() {
+  local p="$1"
+  [ -n "$p" ] || return 1
+  case "$p" in
+    "/"|"") printf '%s\n' "${gl_hong}[错误]${reset} 拒绝删除根目录或空路径: '${p}'" >&2; return 1 ;;
+    /*) return 0 ;;
+    *) printf '%s\n' "${gl_hong}[错误]${reset} 拒绝删除非绝对路径: '${p}'" >&2; return 1 ;;
+  esac
+}
+
+rm_ok() {
+  assert_safe_rm "$1" || return 1
+  rm -rf "$1"
+}
 [ -z "$IMAGE_DIR" ] && IMAGE_DIR="$APP_DIR/public"
 [ -z "$PC_DIR" ] && PC_DIR="$APP_DIR/public/pc"
 [ -z "$MP_DIR" ] && MP_DIR="$APP_DIR/public/mp"
@@ -238,7 +264,7 @@ if [ -n "$APP_DIR" ] && [ -d "$APP_DIR" ]; then
   rm -f "${APP_DIR}/public/pc" 2>/dev/null || true
   rm -f "${APP_DIR}/public/mp" 2>/dev/null || true
   rm -f "${APP_DIR}/public" 2>/dev/null || true
-  rm -rf "$APP_DIR"
+  rm_ok "$APP_DIR"
   ok "已删除程序目录 ${gl_bai}${APP_DIR}${reset}"
 else
   skip "未找到程序目录 ${gl_bai}${APP_DIR}${reset}，跳过。"
@@ -281,7 +307,7 @@ else
     if [ "$KEEP_DATA" = "1" ]; then
       skip "已保留壁纸目录 ${gl_bai}${IMAGE_DIR}${reset}"
     elif [ "$DELETE_DATA" = "1" ]; then
-      rm -rf "$IMAGE_DIR"
+      rm_ok "$IMAGE_DIR"
       ok "已删除壁纸目录 ${gl_bai}${IMAGE_DIR}${reset}"
     elif [ -t 0 ]; then
       read -r -p "${gl_huang}是否删除壁纸目录 ${IMAGE_DIR}？（全部壁纸图片）${gl_bai}[Y/n]${reset}: " DEL_DATA
@@ -290,7 +316,7 @@ else
           skip "已保留壁纸目录 ${gl_bai}${IMAGE_DIR}${reset}"
           ;;
         *)
-          rm -rf "$IMAGE_DIR"
+          rm_ok "$IMAGE_DIR"
           ok "已删除壁纸目录 ${gl_bai}${IMAGE_DIR}${reset}"
           ;;
       esac

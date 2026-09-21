@@ -13,4 +13,5 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - PORT=3000
-      - PUBLIC_HOST=http://10.10.10.251:8588       # 对外访问地址（自定义）
+      # 对外访问地址（可选，用于启动日志显示；留空则显示 http://0.0.0.0:端口）
+      - PUBLIC_HOST=http://your-domain.com:8588

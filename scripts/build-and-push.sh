@@ -40,7 +40,7 @@ get_gh_run_info() {
     expect_sha=$(git rev-parse HEAD 2>/dev/null) || expect_sha=""
 
     local tries=0
-    local max_tries=18
+    local max_tries=120
     local run_json=""
     local sha=""
     while (( tries < max_tries )); do
@@ -84,6 +84,7 @@ calc_elapsed() {
 beautify_gh_run() {
     local workflow="${1:-}"
     local tag="${2:-}"
+    RESULT_FAIL=0
     echo -e ""
     echo -e "${gl_zi}>>> GitHub Actions 流水线信息${gl_bai}"
     echo -e "${gl_bufan}————————————————————————————————————————————————${gl_bai}"
@@ -113,10 +114,10 @@ beautify_gh_run() {
             conclusion=$(gh run view "$run_id" --json conclusion | jq -r '.conclusion')
             case "$conclusion" in
                 success) status_text="${gl_lv}成功${reset}";;
-                failure) status_text="${gl_hong}失败${reset}";;
-                cancelled) status_text="${gl_hui}已取消${reset}";;
-                skipped) status_text="${gl_huang}已跳过${reset}";;
-                *) status_text="${gl_huang}已完成(${conclusion})${reset}";;
+                failure) status_text="${gl_hong}失败${reset}"; RESULT_FAIL=1;;
+                cancelled) status_text="${gl_hui}已取消${reset}"; RESULT_FAIL=1;;
+                skipped) status_text="${gl_huang}已跳过${reset}"; RESULT_FAIL=1;;
+                *) status_text="${gl_huang}已完成(${conclusion})${reset}"; RESULT_FAIL=1;;
             esac
             ;;
         *)
@@ -142,6 +143,9 @@ beautify_gh_run() {
     echo -e "${gl_lv}取消本次构建：${reset}gh run cancel $run_id"
     echo -e "${gl_lv}重新运行流水线：${reset}gh run rerun $run_id"
     echo -e "${gl_bufan}————————————————————————————————————————————————${gl_bai}"
+    if [[ "$RESULT_FAIL" = "1" ]]; then
+        return 1
+    fi
 }
 
 YES_MODE=0
@@ -161,10 +165,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "${TAG}" ]] && error "缺少TAG参数，示例: $0 v1.0.1 --yes"
+# 校验必须带 v 前缀：release.yml 只监听 v* tag，输入 1.0.1 会静默不发版
+[[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || error "TAG 格式错误，必须以 v 开头，示例: v1.0.1"
 
 cd "$(dirname "$0")/.."
 TARGET_VER="${TAG#v}"
-[[ "${TARGET_VER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || error "TAG 格式错误，示例: v1.0.1"
 
 # ===================== 重复Tag/Release自动清理 =====================
 info "检查远端是否存在 Release ${TAG}"
@@ -211,6 +216,20 @@ info "写入发版备注 RELEASE_NOTES.md"
     printf '%s\n' "${MSG}"
     printf '\n'
   fi
+  printf '```bash\n'
+  printf 'docker pull mobufan/fan-random:latest\n'
+  printf '```\n'
+  printf '```bash\n'
+  printf 'docker pull mobufan/fan-random:%s\n' "${TAG}"
+  printf '```\n'
+  printf '\n'
+  printf '```bash\n'
+  printf 'docker pull ghcr.io/meimolihan/fan-random:latest\n'
+  printf '```\n'
+  printf '```bash\n'
+  printf 'docker pull ghcr.io/meimolihan/fan-random:%s\n' "${TAG}"
+  printf '```\n'
+  printf '\n'
   printf '## 二进制安装\n'
   printf '```bash\n'
   printf 'bash -c "$(curl -sSL https://raw.githubusercontent.com/meimolihan/fan-random/main/scripts/install.sh)" -p 8588 -y\n'
@@ -222,7 +241,7 @@ info "写入发版备注 RELEASE_NOTES.md"
   printf '```\n'
   printf '\n'
   printf '## Docker 部署\n'
-  printf '```yaml\n'
+  printf '```bash\n'
   printf 'docker run -d --name fan-random --restart always -p 8588:3000 mobufan/fan-random:%s\n' "${TAG}"
   printf '```\n'
 } > RELEASE_NOTES.md
@@ -240,4 +259,5 @@ info "✅ 已推送 tag ${TAG}，将自动执行发布流水线（release.yml）
 info "查看发布结果: gh release view ${TAG}"
 info "查看镜像: docker pull mobufan/fan-random:${TAG}"
 
-beautify_gh_run "release.yml" "${TAG}" || true
+beautify_gh_run "release.yml" "${TAG}" || exit 1
+info "发布脚本完成。若流水线状态为失败/取消，请用 gh run view 检查具体步骤。"

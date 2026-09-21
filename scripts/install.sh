@@ -208,6 +208,9 @@ done
 # ---- 应用自定义程序安装目录 ----
 if [ -n "${APP_DIR_ARG}" ]; then
   case "${APP_DIR_ARG}" in
+    /) error "安装目录不能为根目录 /" ;;
+  esac
+  case "${APP_DIR_ARG}" in
     /*) ;;
     *) error "安装目录需为绝对路径（以 / 开头）: ${APP_DIR_ARG}" ;;
   esac
@@ -221,6 +224,9 @@ DEFAULT_MP_DIR="${APP_DIR}/public/mp"
 # 校验 pc / mp 壁纸目录（绝对路径，且不得为 APP_DIR 或其 public 根，避免软链自引用）
 validate_wall_dir() {
   local name="$1" dir="$2"
+  case "${dir}" in
+    /) error "${name} 目录不能为根目录 /: ${dir}" ;;
+  esac
   case "${dir}" in
     /*) ;;
     *) error "${name} 目录需为绝对路径（以 / 开头）: ${dir}" ;;
@@ -452,6 +458,13 @@ install_images_pack() {
 
     if [ "${DL_OK}" = "y" ] && [ -s "${APP_DIR}/public.tar.gz" ] \
       && tar -tzf "${APP_DIR}/public.tar.gz" >/dev/null 2>&1; then
+      # 安全校验：拦截包含 ../ 或绝对路径的解压逃逸条目（tar-slip），
+      # 防止来自镜像源的恶意压缩包把文件写到目标目录之外。
+      if tar -tzf "${APP_DIR}/public.tar.gz" 2>/dev/null | grep -E '(^|/)\.\.($|/)|^/' >/dev/null 2>&1; then
+        printf "  %s\n" "${gl_huang}[警告]${reset} 图片包包含不安全路径（../ 或绝对路径），已拒绝：${url}"
+        rm -f "${APP_DIR}/public.tar.gz"
+        continue
+      fi
       # 解压到临时目录后分别复制到 pc/mp 目录（兼容自定义独立目录与旧版 landscape/portrait 包）
       TMP_X="$(mktemp -d)"
       if tar -xzf "${APP_DIR}/public.tar.gz" -C "${TMP_X}" 2>/dev/null; then
@@ -743,28 +756,37 @@ chmod 0644 "${CONFIG_FILE}"
 ok "已写入安装记录 ${gl_bai}${CONFIG_FILE}${reset}"
 
 # 5) 安装内置 CLI 命令
-mkdir -p "$(dirname "${CLI_BIN}")"
-if [ "${INSTALL_METHOD}" = "binary" ]; then
-  rm -f "${CLI_BIN}"
-  ln -s "${BIN_PATH}" "${CLI_BIN}"
-else
-  cat > "${CLI_BIN}" <<CLI
+  mkdir -p "$(dirname "${CLI_BIN}")"
+  if [ "${INSTALL_METHOD}" = "binary" ]; then
+    rm -f "${CLI_BIN}"
+    ln -s "${BIN_PATH}" "${CLI_BIN}"
+  else
+    # 包装脚本只从安装记录读取 APP_DIR，路径中的空格/特殊字符不会被再次解析（防命令注入）；
+    # CLI 以 {APP_DIR}/bin/fan-random.js 的身份运行，__dirname 即程序目录。
+    cat > "${CLI_BIN}" <<'CLI'
 #!/bin/sh
-exec "$(command -v node)" "${APP_DIR}/bin/fan-random.js" "\$@"
+record="$([ -r /etc/fan-random.conf ] && echo /etc/fan-random.conf)"
+[ -n "$record" ] && appdir=$(sed -n 's/^APP_DIR=//p' "$record" | tail -n1) || appdir=""
+[ -z "$appdir" ] && appdir="/var/lib/fan-random"
+exec "$(command -v node)" "$appdir/bin/fan-random.js" "$@"
 CLI
-  chmod +x "${CLI_BIN}"
-fi
-ok "已安装命令 ${gl_bai}${CLI_BIN}${reset}（运行 ${gl_bai}${APP_NAME} help${reset} 查看用法）"
+    chmod +x "${CLI_BIN}"
+  fi
+  ok "已安装命令 ${gl_bai}${CLI_BIN}${reset}（运行 ${gl_bai}${APP_NAME} help${reset} 查看用法）"
 
 sep_line
 section "启动服务"
 if [ "${USE_SYSTEMD}" = "y" ]; then
-  if [ "${INSTALL_METHOD}" = "binary" ]; then
-    EXEC_START="${BIN_PATH}"
-  else
-    EXEC_START="$(command -v node) ${APP_DIR}/docker-server.js"
-  fi
-  cat > "${SERVICE_FILE}" <<UNIT
+    # WorkingDirectory 不做分词，写裸路径；ExecStart 用双引号把含空格的程序路径作为一个参数
+    # （systemd 单元内既不需要也不能用 \" 转义：引号是合法的参数分组符）
+    if [ "${INSTALL_METHOD}" = "binary" ]; then
+      ESC_PATH="$(printf '%s' "${BIN_PATH}" | sed 's/"/\\"/g')"
+      EXEC_LINE="\"${ESC_PATH}\""
+    else
+      ESC_PATH="$(printf '%s' "${APP_DIR}/docker-server.js" | sed 's/"/\\"/g')"
+      EXEC_LINE="$(command -v node) \"${ESC_PATH}\""
+    fi
+    cat > "${SERVICE_FILE}" <<UNIT
 [Unit]
 Description=fan-random - 随机壁纸 API
 After=network-online.target local-fs.target
@@ -774,7 +796,7 @@ Wants=network-online.target
 Type=simple
 # KillMode=process：systemctl stop 只终止主进程
 KillMode=process
-ExecStart=${EXEC_START}
+ExecStart=${EXEC_LINE}
 WorkingDirectory=${APP_DIR}
 Environment=PORT=${PORT}
 Environment=TZ=Asia/Shanghai

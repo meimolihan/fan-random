@@ -1,4 +1,24 @@
-.dockerignore
-node_modules
+# Version control & CI
 .git
+.github
+
+# Dependencies
+node_modules
+
+# Build outputs / local artifacts
+dist
+sea-prep.blob
 api/_manifest.js
+
+# Source image input (not needed in image; only public/pc|mp are used)
+photos
+scripts
+
+# Docs & local config
+README.md
+RELEASE_NOTES.md
+*.md
+.dockerignore
+.gitignore
+vercel.json
+sea-config.json

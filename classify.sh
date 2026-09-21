@@ -154,12 +154,32 @@ get_image_size() {
     -of csv=p=0:s=x "$1" 2>/dev/null || true
 }
 
+# 获取 EXIF 旋转角度（0/90/180/270；无旋转标记时为空或 0）
+get_image_rotation() {
+  local rot
+  rot=$(ffprobe -v error -select_streams v:0 \
+        -show_entries side_data=rotation \
+        -of default=noprint_wrappers=1:nokey=1 "$1" 2>/dev/null | tr -d '[:space:]')
+  case "$rot" in
+    -90|270) echo "90" ;;
+    180)     echo "180" ;;
+    0|"")    echo "0" ;;
+    *)       echo "$rot" ;;
+  esac
+}
+
 # 获取图片方向：landscape（宽>高）/ portrait
+# 与 classify.py 的 EXIF 旋转一致：±90° 时交换宽高判定，
+# 对齐 ffmpeg 编码时的自动旋转（-c:v 默认应用 EXIF 方向）。
 get_image_orientation() {
-  local size width height
+  local size width height rotation
   size=$(get_image_size "$1")
   width=${size%%x*}
   height=${size##*x}
+  rotation=$(get_image_rotation "$1")
+  if [ "$rotation" = "90" ]; then
+    local tmp=$width; width=$height; height=$tmp
+  fi
   if [ -z "$width" ] || [ -z "$height" ] || ! [[ "$width" =~ ^[0-9]+$ ]] || ! [[ "$height" =~ ^[0-9]+$ ]] \
      || [ "$width" -le 0 ] || [ "$height" -le 0 ]; then
     echo "unknown"
@@ -179,17 +199,27 @@ convert_to_webp() {
   if [[ "$width" =~ ^[0-9]+$ ]] && [[ "$height" =~ ^[0-9]+$ ]] && \
      [ $((width * height)) -gt "$MAX_PIXELS" ]; then
     printf "  跳过 %s（分辨率过大）\n" "$(basename "$image_path")"
-    return
+    return 1
   fi
   if [ "$width" -le 0 ] || [ "$height" -le 0 ]; then
     printf "  跳过 %s（无法读取图片信息）\n" "$(basename "$image_path")"
-    return
+    return 1
   fi
 
-  local filename base output_path stderr_log
+  local filename base output_path stderr_log counter
   filename=$(basename "$image_path")
   base="${filename%.*}"
   output_path="$output_folder/${base}.webp"
+  # 幂等：photos/ 中同一输入重复运行时不再生成 -2/-3 变体
+  if [ -f "$output_path" ] && ! [[ "${CREATED_THIS_RUN:-}" == *"|$(realpath "$output_path" 2>/dev/null || echo "$output_path")|"* ]]; then
+    printf "  跳过 %s（已处理过）\n" "$filename"
+    return 2
+  fi
+  counter=2
+  while [ -e "$output_path" ]; do
+    output_path="$output_folder/${base}-${counter}.webp"
+    counter=$((counter + 1))
+  done
   stderr_log="$(mktemp)"
 
   if ! ffmpeg -y -hide_banner -loglevel error \
@@ -201,8 +231,11 @@ convert_to_webp() {
     else
       warn "转换失败: $filename"
     fi
+    return 1
   fi
   rm -f "$stderr_log"
+  CREATED_THIS_RUN="${CREATED_THIS_RUN}|$(realpath "$output_path" 2>/dev/null || echo "$output_path")|"
+  return 0
 }
 
 # 遍历输入目录，处理所有图片（pc=桌面端横屏，mp=移动端竖屏）
@@ -215,12 +248,13 @@ process_images() {
     return
   fi
 
-  # 收集图片文件（支持 .jpg/.jpeg/.png/.webp，与 classify.py 一致）
+  # 收集图片文件（支持 .jpg/.jpeg/.png/.webp，与 classify.py 一致；排序保证可复现）
   local image_files=()
   while IFS= read -r -d '' f; do
     image_files+=("$f")
   done < <(find "$INPUT_FOLDER" -maxdepth 1 -type f \
-      \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) -print0 2>/dev/null)
+      \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) -print0 2>/dev/null \
+      | sort -z)
 
   if [ "${#image_files[@]}" -eq 0 ]; then
     skip "输入目录 $INPUT_FOLDER 中没有找到图片（支持 .jpg/.jpeg/.png/.webp）"
@@ -232,26 +266,26 @@ process_images() {
 
   local pc_count=0 mp_count=0 skipped_count=0
   local i=0 total=${#image_files[@]}
-  local orientation
+  local orientation rc
+  CREATED_THIS_RUN=""
 
   for image_path in "${image_files[@]}"; do
     i=$((i + 1))
     printf "  [%s/%s] %s ...\n" "$i" "$total" "$(basename "$image_path")"
     orientation=$(get_image_orientation "$image_path")
-    case "$orientation" in
-      landscape)
-        convert_to_webp "$image_path" "$OUTPUT_PC"
-        pc_count=$((pc_count + 1))
-        ;;
-      portrait)
-        convert_to_webp "$image_path" "$OUTPUT_MP"
-        mp_count=$((mp_count + 1))
-        ;;
-      *)
-        warn "无法读取图片信息，跳过: $image_path"
-        skipped_count=$((skipped_count + 1))
-        ;;
-    esac
+    rc=1
+    if [ "$orientation" = "landscape" ]; then
+      convert_to_webp "$image_path" "$OUTPUT_PC" && rc=0 || rc=$?
+    elif [ "$orientation" = "portrait" ]; then
+      convert_to_webp "$image_path" "$OUTPUT_MP" && rc=0 || rc=$?
+    else
+      warn "无法读取图片信息，跳过: $image_path"
+    fi
+    if   [ "$rc" -eq 0 ]; then
+      if [ "$orientation" = "landscape" ]; then pc_count=$((pc_count + 1)); else mp_count=$((mp_count + 1)); fi
+    else
+      skipped_count=$((skipped_count + 1))
+    fi
   done
 
   echo ""
