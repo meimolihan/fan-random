@@ -183,6 +183,7 @@ jobs:
     needs: build-docker
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    continue-on-error: true
     env:
       CNB_ACCESS_TOKEN: ${{ secrets.CNB_ACCESS_TOKEN }}
     steps:
