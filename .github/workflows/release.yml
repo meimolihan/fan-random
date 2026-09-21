@@ -61,7 +61,6 @@ jobs:
           pkg -t node20-linux-x64 docker-server.js -o fan-random_linux_amd64
           pkg -t node20-linux-arm64 docker-server.js -o fan-random_linux_arm64
           ./fan-random_linux_amd64 version
-          ./fan-random_linux_arm64 version
           ls -lh fan-random_linux_amd64 fan-random_linux_arm64
           echo "built=true" >> "$GITHUB_OUTPUT"
 
@@ -184,6 +183,8 @@ jobs:
     needs: build-docker
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      CNB_ACCESS_TOKEN: ${{ secrets.CNB_ACCESS_TOKEN }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -191,9 +192,9 @@ jobs:
           ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', github.event.inputs.tag) }}
 
       - name: Sync to CNB Repository
-        if: ${{ secrets.CNB_ACCESS_TOKEN != '' }}
+        if: ${{ env.CNB_ACCESS_TOKEN != '' }}
         env:
-          CNB_TOKEN: ${{ secrets.CNB_ACCESS_TOKEN }}
+          CNB_TOKEN: ${{ env.CNB_ACCESS_TOKEN }}
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:${{ github.workspace }} \
@@ -207,7 +208,5 @@ jobs:
             tencentcom/git-sync
 
       - name: Skip CNB sync
-        if: ${{ secrets.CNB_ACCESS_TOKEN == '' }}
-        env:
-          CNB_TOKEN: ${{ secrets.CNB_ACCESS_TOKEN }}
+        if: ${{ env.CNB_ACCESS_TOKEN == '' }}
         run: echo "::warning::CNB_ACCESS_TOKEN 未配置，跳过同步到 CNB 镜像仓库"
