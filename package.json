@@ -1,6 +1,6 @@
 {
   "name": "fan-random",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "随机壁纸 API - Vercel/Docker/单文件/Systemd 全场景部署版",
   "main": "docker-server.js",
   "bin": {
