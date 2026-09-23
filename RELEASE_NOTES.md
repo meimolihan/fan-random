@@ -1,17 +1,17 @@
-全链路验证
+自动构建发布 v1.0.2
 
 ```bash
 docker pull mobufan/fan-random:latest
 ```
 ```bash
-docker pull mobufan/fan-random:v1.0.1
+docker pull mobufan/fan-random:v1.0.2
 ```
 
 ```bash
 docker pull ghcr.io/meimolihan/fan-random:latest
 ```
 ```bash
-docker pull ghcr.io/meimolihan/fan-random:v1.0.1
+docker pull ghcr.io/meimolihan/fan-random:v1.0.2
 ```
 
 ## 二进制安装
@@ -26,5 +26,5 @@ bash -c "$(curl -sSL https://raw.githubusercontent.com/meimolihan/fan-random/mai
 
 ## Docker 部署
 ```bash
-docker run -d --name fan-random --restart always -p 8588:3000 mobufan/fan-random:v1.0.1
+docker run -d --name fan-random --restart always -p 8588:3000 mobufan/fan-random:v1.0.2
 ```
